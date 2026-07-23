@@ -1,0 +1,10 @@
+# Per-client variable values. Copy to <client>.tfvars and fill in real values.
+#   cp clients/acme.tfvars.example clients/acme.tfvars
+# The real *.tfvars is gitignored (may contain PII / account-specific data).
+
+client_name      = "acme"                      # 3-20 lowercase alphanumeric / hyphens; prefixes all resources
+admin_email      = "you@example.com"           # initial Cognito admin; receives a temporary password
+aws_region       = "eu-north-1"                # must support Bedrock; eu-* uses the eu. cross-region inference profile
+aws_profile      = "terraform-deployer"        # AWS CLI profile (AssumeRole) used for deployment
+container_cpu    = 2048                         # Fargate task CPU: 512 | 1024 | 2048 | 4096
+container_memory = 4096                         # Fargate task memory (MB): 1024 | 2048 | 4096 | 8192

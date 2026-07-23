@@ -1,0 +1,11 @@
+# S3 remote state backend config (partial). Copy to <client>.hcl and fill in real values.
+#   cp backends/acme.hcl.example backends/acme.hcl
+#   tofu init -backend-config=backends/acme.hcl
+# The real *.hcl is gitignored (contains your AWS account ID).
+
+bucket         = "map-accelerator-tfstate-<AWS_ACCOUNT_ID>"  # created once by bootstrap/
+key            = "clients/acme/terraform.tfstate"            # unique state path per client
+region         = "eu-north-1"                                # region of the state bucket (can differ from resource region)
+dynamodb_table = "terraform-state-lock"                      # created once by bootstrap/
+encrypt        = true
+profile        = "terraform-deployer"                        # AWS CLI profile used for state access
