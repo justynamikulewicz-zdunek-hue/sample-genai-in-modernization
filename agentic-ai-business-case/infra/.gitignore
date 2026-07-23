@@ -1,0 +1,30 @@
+# ---------------------------------------------------------------------------
+# Terraform / OpenTofu
+# ---------------------------------------------------------------------------
+
+# Provider binaries and module cache (hundreds of MB - never commit)
+**/.terraform/*
+
+# State files (may contain secrets, ARNs, account IDs - never commit)
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash logs
+crash.log
+crash.*.log
+
+# CLI config
+.terraformrc
+terraform.rc
+
+# ---------------------------------------------------------------------------
+# Client-specific config (account IDs, emails, PII)
+# Only *.example templates are committed for reproducibility.
+# ---------------------------------------------------------------------------
+*.tfvars
+!*.tfvars.example
+backends/*.hcl
+!backends/*.hcl.example
+
+# NOTE: .terraform.lock.hcl IS committed on purpose (pins provider versions).
