@@ -30,7 +30,7 @@ resource "aws_cognito_user_pool_domain" "main" {
 }
 
 # ---------------------------------------------------------------------------
-# App Client — OAuth code flow, ALB callback
+# App Client — OAuth code flow, Lambda Function URL callback
 # Replaces CF Lambda GetClientSecretLambda: client_secret is a direct attribute
 # ---------------------------------------------------------------------------
 resource "aws_cognito_user_pool_client" "app" {
@@ -42,8 +42,8 @@ resource "aws_cognito_user_pool_client" "app" {
   allowed_oauth_flows_user_pool_client = true
   allowed_oauth_scopes                 = ["openid", "email", "profile"]
 
-  callback_urls = ["https://${var.alb_dns_name}/auth/callback"]
-  logout_urls   = ["https://${var.alb_dns_name}/logout"]
+  callback_urls = ["${var.app_url}/auth/callback"]
+  logout_urls   = ["${var.app_url}/logout"]
 
   supported_identity_providers = ["COGNITO"]
 
@@ -61,6 +61,50 @@ resource "aws_cognito_user_pool_client" "app" {
   access_token_validity  = 1
   id_token_validity      = 1
   refresh_token_validity = 30
+}
+
+# ---------------------------------------------------------------------------
+# Cognito config in SSM — read by the app at cold start (cognito_auth.py).
+#
+# These cannot be passed to the Lambda as environment variables: the app's
+# Function URL is what callback_urls above point at, so the function would have
+# to exist before Cognito, and Cognito before the function. Routing the values
+# through SSM breaks that cycle. It also keeps the client secret out of the
+# function's environment, where GetFunctionConfiguration would expose it.
+# ---------------------------------------------------------------------------
+resource "aws_ssm_parameter" "user_pool_id" {
+  name  = "${var.ssm_prefix}/user_pool_id"
+  type  = "String"
+  value = aws_cognito_user_pool.main.id
+  tags  = { Client = var.client_name }
+}
+
+resource "aws_ssm_parameter" "client_id" {
+  name  = "${var.ssm_prefix}/client_id"
+  type  = "String"
+  value = aws_cognito_user_pool_client.app.id
+  tags  = { Client = var.client_name }
+}
+
+resource "aws_ssm_parameter" "client_secret" {
+  name  = "${var.ssm_prefix}/client_secret"
+  type  = "SecureString"
+  value = aws_cognito_user_pool_client.app.client_secret
+  tags  = { Client = var.client_name }
+}
+
+resource "aws_ssm_parameter" "domain" {
+  name  = "${var.ssm_prefix}/domain"
+  type  = "String"
+  value = "${aws_cognito_user_pool_domain.main.domain}.auth.${var.aws_region}.amazoncognito.com"
+  tags  = { Client = var.client_name }
+}
+
+resource "aws_ssm_parameter" "app_url" {
+  name  = "${var.ssm_prefix}/app_url"
+  type  = "String"
+  value = var.app_url
+  tags  = { Client = var.client_name }
 }
 
 # ---------------------------------------------------------------------------

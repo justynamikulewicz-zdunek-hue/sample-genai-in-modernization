@@ -73,12 +73,42 @@ module "iam" {
   ecr_repository_arn   = module.ecr.repository_arn
 }
 
-module "alb" {
-  source                = "./modules/alb"
-  client_name           = var.client_name
-  vpc_id                = module.vpc.vpc_id
-  public_subnet_ids     = module.vpc.public_subnet_ids
-  alb_security_group_id = module.vpc.alb_security_group_id
+# The ALB module is gone: a Lambda Function URL serves the app directly, with an
+# AWS-issued certificate instead of the ALB's self-signed one. The module
+# directory stays in the repo for clients who mandate an ALB.
+
+# ---------------------------------------------------------------------------
+# Dependency order matters below.
+#
+# The app's public URL now belongs to the Lambda itself, so passing Cognito IDs
+# into the function would close a loop:
+#     lambda -> function_url -> cognito.callback_urls -> lambda.environment
+# The chain is straightened by publishing Cognito config to SSM and having the
+# app read it at cold start (see ui/backend/cognito_auth.py):
+#     lambda -> function_url -> cognito -> SSM
+# ---------------------------------------------------------------------------
+locals {
+  cognito_ssm_prefix = "/${var.client_name}/cognito"
+}
+
+module "lambda" {
+  source              = "./modules/lambda"
+  client_name         = var.client_name
+  lambda_role_arn     = module.iam.lambda_role_arn
+  ecr_repository_url  = module.ecr.repository_url
+  s3_input_bucket     = module.s3.input_bucket_name
+  s3_output_bucket    = module.s3.output_bucket_name
+  dynamodb_table_name = module.dynamodb.table_name
+  cognito_ssm_prefix  = local.cognito_ssm_prefix
+  memory_mb           = var.lambda_memory_mb
+  timeout_seconds     = var.lambda_timeout_seconds
+
+  # Generation jobs run here, not in the function itself.
+  ecs_cluster_arn            = module.ecs.cluster_arn
+  ecs_task_definition_family = module.ecs.task_definition_family
+  ecs_container_name         = module.ecs.container_name
+  ecs_subnet_ids             = module.vpc.public_subnet_ids
+  ecs_security_group_id      = module.vpc.ecs_security_group_id
 }
 
 module "cognito" {
@@ -86,41 +116,36 @@ module "cognito" {
   client_name           = var.client_name
   admin_email           = var.admin_email
   aws_region            = var.aws_region
-  alb_dns_name          = module.alb.alb_dns_name
+  app_url               = module.lambda.app_url
+  ssm_prefix            = local.cognito_ssm_prefix
   cognito_domain_suffix = random_id.cognito_suffix.hex
 }
 
+# Cluster and task definition only — no service. The Lambda uses these to run
+# generations that would exceed its 900s ceiling. Costs nothing while idle.
 module "ecs" {
   source                  = "./modules/ecs"
   client_name             = var.client_name
   aws_region              = var.aws_region
-  vpc_id                  = module.vpc.vpc_id
-  private_subnet_ids      = module.vpc.private_subnet_ids
-  ecs_security_group_id   = module.vpc.ecs_security_group_id
-  target_group_arn        = module.alb.target_group_arn
   task_execution_role_arn = module.iam.ecs_task_execution_role_arn
   task_role_arn           = module.iam.ecs_task_role_arn
   ecr_repository_url      = module.ecr.repository_url
   s3_input_bucket         = module.s3.input_bucket_name
   s3_output_bucket        = module.s3.output_bucket_name
   dynamodb_table_name     = module.dynamodb.table_name
-  cognito_user_pool_id    = module.cognito.user_pool_id
-  cognito_client_id       = module.cognito.client_id
-  cognito_client_secret   = module.cognito.client_secret
-  cognito_domain          = module.cognito.domain
-  app_url                 = "https://${module.alb.alb_dns_name}"
   container_cpu           = var.container_cpu
   container_memory        = var.container_memory
 }
 
 module "codebuild" {
-  source             = "./modules/codebuild"
-  client_name        = var.client_name
-  aws_region         = var.aws_region
-  account_id         = data.aws_caller_identity.current.account_id
-  ecr_repository_url = module.ecr.repository_url
-  codebuild_role_arn = module.iam.codebuild_role_arn
-  github_repo_url    = var.github_repo_url
-  github_branch      = var.github_branch
-  project_subdir     = var.project_subdir
+  source               = "./modules/codebuild"
+  client_name          = var.client_name
+  aws_region           = var.aws_region
+  account_id           = data.aws_caller_identity.current.account_id
+  ecr_repository_url   = module.ecr.repository_url
+  codebuild_role_arn   = module.iam.codebuild_role_arn
+  lambda_function_name = module.lambda.function_name
+  github_repo_url      = var.github_repo_url
+  github_branch        = var.github_branch
+  project_subdir       = var.project_subdir
 }

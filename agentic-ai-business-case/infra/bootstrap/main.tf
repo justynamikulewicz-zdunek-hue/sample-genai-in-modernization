@@ -63,8 +63,8 @@ resource "aws_dynamodb_table" "tflock" {
 # GitHub OIDC provider (for GitHub Actions CI/CD)
 # ---------------------------------------------------------------------------
 resource "aws_iam_openid_connect_provider" "github" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
   thumbprint_list = [
     "6938fd4d98bab03faadb97b34396831e3780aea1",
     "1c58a3a8518e8759bf075b76b750d4f2df264fcd"
@@ -132,9 +132,9 @@ data "aws_iam_policy_document" "terraform_deployer_permissions" {
   }
 
   statement {
-    sid    = "StateLock"
-    effect = "Allow"
-    actions = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:DescribeTable"]
+    sid       = "StateLock"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:DescribeTable"]
     resources = [aws_dynamodb_table.tflock.arn]
   }
 
@@ -173,6 +173,9 @@ data "aws_iam_policy_document" "terraform_deployer_permissions" {
       "iam:CreatePolicy", "iam:DeletePolicy",
       "iam:GetPolicy", "iam:GetPolicyVersion",
       "iam:ListPolicyVersions", "iam:TagPolicy",
+      # Updating an existing managed policy creates a new version of it, so
+      # CreatePolicy alone is not enough to change one after it exists.
+      "iam:CreatePolicyVersion", "iam:DeletePolicyVersion",
       "iam:CreateOpenIDConnectProvider", "iam:DeleteOpenIDConnectProvider",
       "iam:GetOpenIDConnectProvider", "iam:TagOpenIDConnectProvider"
     ]
@@ -200,6 +203,18 @@ data "aws_iam_policy_document" "terraform_deployer_permissions" {
     resources = ["*"]
   }
 
+  # The web tier moved from ECS Fargate behind an ALB to a Lambda with a
+  # Function URL, so the deployer needs to manage functions, their URLs and
+  # their resource policies.
+  statement {
+    sid       = "LambdaFull"
+    effect    = "Allow"
+    actions   = ["lambda:*"]
+    resources = ["*"]
+  }
+
+  # Kept for clients who still mandate an ALB; the default stack no longer
+  # creates one.
   statement {
     sid       = "ELBFull"
     effect    = "Allow"

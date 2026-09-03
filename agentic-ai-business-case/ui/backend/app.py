@@ -325,260 +325,185 @@ def storage_status():
         }
     })
 
+@app.route('/api/upload-url', methods=['POST'])
+def create_upload_url():
+    """Hand the browser a presigned PUT so files go straight to S3.
+
+    Uploads must not travel through the application: the web tier is a Lambda,
+    whose request body is capped at 6 MB, and a real RVTools export passes that
+    easily. The generation job reads the files back out of S3.
+    """
+    if not is_s3_enabled():
+        return jsonify({'success': False, 'message': 'S3 storage is not enabled'}), 503
+
+    user = get_user_from_oidc()
+    if not user:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+
+    data = request.get_json(silent=True) or {}
+    filename = secure_filename(data.get('filename', ''))
+    try:
+        case_id = safe_case_id(data.get('caseId', ''))
+    except ValueError:
+        return jsonify({'success': False, 'message': 'A valid caseId is required'}), 400
+
+    if not filename:
+        return jsonify({'success': False, 'message': 'filename is required'}), 400
+    if not allowed_file(filename):
+        return jsonify({'success': False, 'message': f'File type not allowed: {filename}'}), 400
+
+    try:
+        s3_key = f"{case_id}/{filename}"
+        url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={'Bucket': S3_INPUT_BUCKET, 'Key': s3_key},
+            ExpiresIn=900,
+        )
+        return jsonify({'success': True, 'url': url, 'key': s3_key, 'filename': filename})
+    except Exception as e:
+        logging.error(f"Failed to presign upload for {case_id}: {e}")
+        return jsonify({'success': False, 'message': 'Could not create upload URL'}), 500
+
+
 @app.route('/api/generate', methods=['POST'])
 def generate_business_case():
-    try:
-        # Get project info
-        project_info = json.loads(request.form.get('projectInfo', '{}'))
-        selected_agents = json.loads(request.form.get('selectedAgents', '[]'))
-        case_id = request.form.get('caseId', None)
-        
-        # Generate case ID if not provided
-        if not case_id:
-            case_id = f"case-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
-        else:
-            case_id = safe_case_id(case_id)
-        
-        # Create case-specific input directory
-        case_input_dir = safe_path(INPUT_DIR, case_id)
-        os.makedirs(case_input_dir, exist_ok=True)
-        print(f"Created case-specific input directory: {case_input_dir}")
-        
-        # Save uploaded files
-        file_mapping = {
-            'itInventory': 'it-infrastructure-inventory.xlsx',
-            'atxPptx': 'atx_business_case.pptx',
-            'portfolio': 'application-portfolio.csv'
-        }
-        
-        uploaded_files = {}
-        s3_file_keys = {}
-        
-        # Handle single files - save to case-specific directory
-        for key, target_filename in file_mapping.items():
-            if key in request.files:
-                file = request.files[key]
-                if file and allowed_file(file.filename):
-                    # Save to case-specific input directory ONLY
-                    filepath = safe_path(case_input_dir, target_filename)
-                    file.save(filepath)
-                    uploaded_files[key] = filepath
-                    print(f"✓ Saved {key} to case directory: {filepath}")
-                    
-                    # Upload to S3 if enabled
-                    if is_s3_enabled():
-                        s3_key = upload_file_to_s3(filepath, case_id, target_filename)
-                        if s3_key:
-                            s3_file_keys[key] = s3_key
-        
-        # Handle MRA file separately - preserve original extension
-        if 'mra' in request.files:
-            file = request.files['mra']
-            if file and allowed_file(file.filename):
-                # Get the file extension
-                original_filename = secure_filename(file.filename)
-                file_ext = original_filename.rsplit('.', 1)[1].lower()
-                
-                # Save with appropriate extension
-                target_filename = f'mra-assessment.{file_ext}'
-                
-                # Save to case-specific directory ONLY
-                filepath = safe_path(case_input_dir, target_filename)
-                file.save(filepath)
-                uploaded_files['mra'] = filepath
-                print(f"✓ Saved MRA to case directory: {filepath}")
-                
-                # Upload to S3 if enabled
-                if is_s3_enabled():
-                    s3_key = upload_file_to_s3(filepath, case_id, target_filename)
-                    if s3_key:
-                        s3_file_keys['mra'] = s3_key
-        
-        # Handle multiple RVTools files - save to case-specific directory
-        if 'rvTool' in request.files:
-            rv_files = request.files.getlist('rvTool')
-            print(f"DEBUG: Received {len(rv_files)} RVTools file(s)")
-            rv_file_paths = []
-            rv_s3_keys = []
-            
-            for idx, file in enumerate(rv_files):
-                print(f"DEBUG: Processing RVTools file {idx}: {file.filename if file else 'None'}")
-                if file and allowed_file(file.filename):
-                    # Preserve original filename
-                    safe_filename = secure_filename(file.filename)
-                    
-                    # Save to case-specific directory ONLY
-                    filepath = safe_path(case_input_dir, safe_filename)
-                    file.save(filepath)
-                    rv_file_paths.append(filepath)
-                    print(f"✓ Saved RVTools file to case directory: {filepath}")
-                    
-                    # Upload to S3 if enabled
-                    if is_s3_enabled():
-                        s3_key = upload_file_to_s3(filepath, case_id, safe_filename)
-                        if s3_key:
-                            rv_s3_keys.append(s3_key)
-                else:
-                    print(f"DEBUG: RVTools file rejected - file: {file}, allowed: {allowed_file(file.filename) if file else 'N/A'}")
-            
-            if rv_file_paths:
-                uploaded_files['rvTool'] = rv_file_paths
-                print(f"DEBUG: Total RVTools files uploaded: {len(rv_file_paths)}")
-                if rv_s3_keys:
-                    s3_file_keys['rvTool'] = rv_s3_keys
-        else:
-            print("DEBUG: No 'rvTool' field found in request.files")
-        
-        # Save project info and uploaded filenames to a file for agents to access
-        project_info_with_files = project_info.copy()
-        project_info_with_files['caseId'] = case_id
-        project_info_with_files['uploadedFiles'] = {
-            key: [os.path.basename(f) for f in files] if isinstance(files, list) else os.path.basename(files)
-            for key, files in uploaded_files.items()
-        }
-        
-        # Save to case-specific directory ONLY
-        case_project_info_file = safe_path(case_input_dir, 'project_info.json')
-        with open(case_project_info_file, 'w', encoding='utf-8') as f:
-            json.dump(project_info_with_files, f, indent=2)
-        print(f"✓ Saved project info to case directory: {case_project_info_file}")
-        
-        # ALSO save to main input directory so agents can find it
-        # (agents look for project_info.json in base input/ to get case ID)
-        project_info_file = os.path.join(INPUT_DIR, 'project_info.json')
-        with open(project_info_file, 'w', encoding='utf-8') as f:
-            json.dump(project_info_with_files, f, indent=2)
-        print(f"✓ Saved project info to base directory: {project_info_file}")
-        
-        # Run the business case generator
-        result = run_business_case_generator(project_info, selected_agents)
-        
-        # Read the generated business case
-        # First check case-specific output folder, then fall back to root
-        case_output_dir = safe_path(OUTPUT_DIR, case_id)
-        output_file = safe_path(case_output_dir, 'aws_business_case.md')
-        
-        if not os.path.exists(output_file):
-            # Fallback to root output folder
-            output_file = os.path.join(OUTPUT_DIR, 'aws_business_case.md')
-        
-        output_s3_keys = {}
-        
-        if os.path.exists(output_file):
-            with open(output_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Upload business case to S3 if enabled
-            if is_s3_enabled():
-                s3_key = upload_file_to_s3(output_file, case_id, 'aws_business_case.md')
-                if s3_key:
-                    output_s3_keys['business_case'] = s3_key
-                    print(f"✓ Business case uploaded to S3: {s3_key}")
-            
-            # Upload all Excel files to S3 if they exist and S3 is enabled
-            if is_s3_enabled():
-                # Check for RVTools Excel file (check case folder first)
-                excel_file = safe_path(case_output_dir, 'vm_to_ec2_mapping.xlsx')
-                if not os.path.exists(excel_file):
-                    excel_file = safe_path(OUTPUT_DIR, 'vm_to_ec2_mapping.xlsx')
-                
-                if os.path.exists(excel_file):
-                    s3_key = upload_file_to_s3(excel_file, case_id, 'vm_to_ec2_mapping.xlsx')
-                    if s3_key:
-                        output_s3_keys['excel_mapping'] = s3_key
-                        print(f"✓ Excel mapping uploaded to S3: {s3_key}")
-                
-                # Check for EKS Excel file (check case folder first)
-                eks_excel_file = safe_path(case_output_dir, 'eks_migration_analysis.xlsx')
-                if not os.path.exists(eks_excel_file):
-                    eks_excel_file = safe_path(OUTPUT_DIR, 'eks_migration_analysis.xlsx')
-                
-                if os.path.exists(eks_excel_file):
-                    s3_key = upload_file_to_s3(eks_excel_file, case_id, 'eks_migration_analysis.xlsx')
-                    if s3_key:
-                        output_s3_keys['eks_analysis'] = s3_key
-                        print(f"✓ EKS analysis uploaded to S3: {s3_key}")
-                
-                # Check for IT Inventory Excel file (check case folder first, then root)
-                import glob
-                it_inventory_files = glob.glob(os.path.join(case_output_dir, 'it_inventory_aws_pricing_*.xlsx'))
-                if not it_inventory_files:
-                    it_inventory_files = glob.glob(os.path.join(OUTPUT_DIR, 'it_inventory_aws_pricing_*.xlsx'))
-                
-                if it_inventory_files:
-                    # Upload the most recent IT inventory file
-                    it_inventory_file = max(it_inventory_files, key=os.path.getmtime)
-                    filename = os.path.basename(it_inventory_file)
-                    s3_key = upload_file_to_s3(it_inventory_file, case_id, filename)
-                    if s3_key:
-                        output_s3_keys['it_inventory'] = s3_key
-                        print(f"✓ IT Inventory uploaded to S3: {s3_key}")
-            
-            # Auto-save to DynamoDB if enabled
-            saved_to_db = False
-            if AUTO_SAVE_TO_DYNAMODB and is_dynamodb_enabled():
-                try:
-                    user = get_user_from_oidc()
-                    if user:
-                        item = {
-                            'caseId': case_id,
-                            'userId': user['sub'],
-                            'userEmail': user.get('email', 'unknown'),
-                            'projectInfo': project_info,
-                            'uploadedFiles': list(uploaded_files.keys()),
-                            'selectedAgents': selected_agents,
-                            'businessCaseContent': content,
-                            'createdAt': datetime.utcnow().isoformat(),
-                            'lastUpdated': datetime.utcnow().isoformat(),
-                            'executionStats': {
-                                'agentsExecuted': len(selected_agents),
-                                'executionTime': result.get('execution_time', 'N/A'),
-                                'tokenUsage': result.get('token_usage', 'N/A')
-                            },
-                            's3FileKeys': s3_file_keys if is_s3_enabled() else {},
-                            'outputS3Keys': output_s3_keys if is_s3_enabled() else {},
-                            's3BucketName': S3_INPUT_BUCKET if is_s3_enabled() else None,
-                            's3Enabled': is_s3_enabled()
-                        }
-                        dynamodb_table.put_item(Item=item)
-                        saved_to_db = True
-                        print(f"✓ Auto-saved to DynamoDB: {case_id}")
-                except Exception as db_error:
-                    print(f"Warning: Auto-save to DynamoDB failed: {str(db_error)}")
-            
-            return jsonify({
-                'success': True,
-                'content': content,
-                'projectInfo': project_info,
-                'agentsExecuted': len(selected_agents),
-                'executionTime': result.get('execution_time', 'N/A'),
-                'tokenUsage': result.get('token_usage', 'N/A'),
-                'caseId': case_id,
-                'uploadedFiles': list(uploaded_files.keys()),
-                's3FileKeys': s3_file_keys if is_s3_enabled() else None,
-                's3InputBucket': S3_INPUT_BUCKET if is_s3_enabled() else None,
-                's3OutputBucket': S3_OUTPUT_BUCKET if is_s3_enabled() else None,
-                'outputS3Keys': output_s3_keys if is_s3_enabled() else None,
-                'autoSaved': saved_to_db
-            })
-        else:
-            return jsonify({
-                'success': False,
-                'message': 'Business case file not generated'
-            }), 500
-            
-    except Exception as e:
-        logging.error(f"Business case generation failed: {e}")
-        import traceback
-        traceback.print_exc()
-        error_detail = str(e)
-        # Include last 500 chars of error for debugging (truncate sensitive info)
-        if len(error_detail) > 500:
-            error_detail = "..." + error_detail[-500:]
+    """Queue a generation and return a job id straight away.
+
+    This used to run the generator inline and hold the HTTP connection open for
+    the whole job. That cannot work on Lambda: the 900-second timeout is a hard
+    AWS limit, and a large business case can legitimately exceed it.
+
+    So the work is handed to a one-shot Fargate task instead. There is
+    deliberately no "small jobs run inline" shortcut — one code path is simpler
+    to reason about than two, and at current volumes the task costs cents.
+    Progress is tracked on the case row in DynamoDB and polled via /api/status.
+
+    Expects JSON; the files themselves were already uploaded to S3 by the
+    browser using /api/upload-url.
+    """
+    if not is_s3_enabled():
+        return jsonify({'success': False, 'message': 'S3 storage is not enabled'}), 503
+    if not is_dynamodb_enabled():
+        return jsonify({'success': False, 'message': 'DynamoDB is not enabled'}), 503
+
+    user = get_user_from_oidc()
+    if not user:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+
+    cluster = os.environ.get('ECS_CLUSTER')
+    task_definition = os.environ.get('ECS_TASK_DEFINITION')
+    container_name = os.environ.get('ECS_CONTAINER_NAME')
+    subnet_ids = [s for s in os.environ.get('ECS_SUBNET_IDS', '').split(',') if s]
+    security_group = os.environ.get('ECS_SECURITY_GROUP')
+
+    if not (cluster and task_definition and container_name and subnet_ids and security_group):
         return jsonify({
             'success': False,
-            'message': f'Business case generation failed: {error_detail}'
-        }), 500
+            'message': 'Generation backend is not configured (missing ECS_* settings)'
+        }), 503
+
+    try:
+        data = request.get_json(silent=True) or {}
+        project_info = data.get('projectInfo', {})
+        selected_agents = data.get('selectedAgents', [])
+        uploaded_files = data.get('uploadedFiles', {})
+
+        # The browser picks the caseId first, because it needs one to request
+        # presigned upload URLs before this endpoint is ever called.
+        requested_case_id = data.get('caseId')
+        if requested_case_id:
+            case_id = safe_case_id(requested_case_id)
+        else:
+            case_id = f"case-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        created_at = datetime.utcnow().isoformat()
+
+        # project_info.json travels with the inputs; the job and the agents both
+        # read it from S3 to work out what this case contains.
+        project_info_payload = dict(project_info)
+        project_info_payload['caseId'] = case_id
+        project_info_payload['selectedAgents'] = selected_agents
+        project_info_payload['uploadedFiles'] = uploaded_files
+
+        s3_client.put_object(
+            Bucket=S3_INPUT_BUCKET,
+            Key=f"{case_id}/project_info.json",
+            Body=json.dumps(project_info_payload, indent=2).encode('utf-8'),
+            ContentType='application/json',
+        )
+
+        # Written before RunTask so a client that polls immediately sees QUEUED
+        # rather than a missing row.
+        dynamodb_table.put_item(Item={
+            'caseId': case_id,
+            'createdAt': created_at,
+            'userId': user['sub'],
+            'userEmail': user.get('email', 'unknown'),
+            'projectInfo': project_info,
+            'selectedAgents': selected_agents,
+            'uploadedFiles': list(uploaded_files.keys()),
+            'status': 'QUEUED',
+            'lastUpdated': created_at,
+            's3BucketName': S3_INPUT_BUCKET,
+            's3Enabled': True,
+        })
+
+        ecs_client = boto3.client('ecs')
+        response = ecs_client.run_task(
+            cluster=cluster,
+            taskDefinition=task_definition,
+            launchType='FARGATE',
+            count=1,
+            networkConfiguration={
+                'awsvpcConfiguration': {
+                    'subnets': subnet_ids,
+                    'securityGroups': [security_group],
+                    # Public subnet plus a public IP: the task needs to reach
+                    # Bedrock and ECR, and this is cheaper than a NAT Gateway
+                    # for jobs that run occasionally.
+                    'assignPublicIp': 'ENABLED',
+                }
+            },
+            overrides={
+                'containerOverrides': [{
+                    'name': container_name,
+                    'command': ['python', '/app/ui/backend/job_runner.py'],
+                    'environment': [
+                        {'name': 'CASE_ID', 'value': case_id},
+                        {'name': 'CASE_CREATED_AT', 'value': created_at},
+                    ],
+                }]
+            },
+        )
+
+        failures = response.get('failures') or []
+        if failures:
+            reason = failures[0].get('reason', 'unknown')
+            dynamodb_table.update_item(
+                Key={'caseId': case_id, 'createdAt': created_at},
+                UpdateExpression='SET #s = :s, errorMessage = :e',
+                ExpressionAttributeNames={'#s': 'status'},
+                ExpressionAttributeValues={':s': 'FAILED', ':e': f'Could not start task: {reason}'},
+            )
+            logging.error(f"RunTask failed for {case_id}: {failures}")
+            return jsonify({'success': False, 'message': f'Could not start generation: {reason}'}), 502
+
+        task_arn = response['tasks'][0]['taskArn']
+        print(f"✓ Queued generation {case_id} as {task_arn}")
+
+        return jsonify({
+            'success': True,
+            'jobId': case_id,
+            'caseId': case_id,
+            'createdAt': created_at,
+            'status': 'QUEUED',
+        }), 202
+
+    except Exception as e:
+        logging.error(f"Failed to queue business case generation: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'message': 'Failed to queue generation'}), 500
+
 
 def run_business_case_generator(project_info, selected_agents):
     """
@@ -665,13 +590,71 @@ def run_business_case_generator(project_info, selected_agents):
 
 @app.route('/api/status/<job_id>', methods=['GET'])
 def check_status(job_id):
-    """Check the status of a generation job"""
-    # This is a placeholder for async job tracking
-    return jsonify({
-        'jobId': job_id,
-        'status': 'completed',
-        'progress': 100
-    })
+    """Report on a queued generation.
+
+    Previously a stub that always claimed success, which was harmless only
+    because generation was synchronous. Now that the work runs in a separate
+    Fargate task, this is the only way the browser learns the outcome, so it
+    reads the real state the job writes to the case row.
+    """
+    if not is_dynamodb_enabled():
+        return jsonify({'success': False, 'message': 'DynamoDB is not enabled'}), 503
+
+    user = get_user_from_oidc()
+    if not user:
+        return jsonify({'success': False, 'message': 'Not authenticated'}), 401
+
+    try:
+        case_id = safe_case_id(job_id)
+    except ValueError:
+        return jsonify({'success': False, 'message': 'Invalid job id'}), 400
+
+    created_at = request.args.get('createdAt')
+
+    try:
+        if created_at:
+            item = dynamodb_table.get_item(
+                Key={'caseId': case_id, 'createdAt': created_at}
+            ).get('Item')
+        else:
+            # createdAt is the sort key, so without it fall back to the newest
+            # row for this case.
+            results = dynamodb_table.query(
+                KeyConditionExpression='caseId = :caseId',
+                ExpressionAttributeValues={':caseId': case_id},
+                ScanIndexForward=False,
+                Limit=1,
+            ).get('Items') or []
+            item = results[0] if results else None
+
+        if not item:
+            return jsonify({'success': False, 'message': 'Job not found'}), 404
+
+        # Cases are per-user; do not leak another user's work.
+        if item.get('userId') != user['sub']:
+            return jsonify({'success': False, 'message': 'Job not found'}), 404
+
+        status = item.get('status', 'UNKNOWN')
+        payload = {
+            'success': True,
+            'jobId': case_id,
+            'caseId': case_id,
+            'createdAt': item.get('createdAt'),
+            'status': status,
+        }
+
+        if status == 'COMPLETED':
+            payload['content'] = item.get('businessCaseContent', '')
+            payload['outputS3Keys'] = item.get('outputS3Keys', {})
+            payload['executionStats'] = item.get('executionStats', {})
+        elif status == 'FAILED':
+            payload['message'] = item.get('errorMessage', 'Generation failed')
+
+        return jsonify(payload)
+
+    except Exception as e:
+        logging.error(f"Status lookup failed for {case_id}: {e}")
+        return jsonify({'success': False, 'message': 'Could not read job status'}), 500
 
 @app.route('/api/dynamodb/status', methods=['GET'])
 def dynamodb_status():

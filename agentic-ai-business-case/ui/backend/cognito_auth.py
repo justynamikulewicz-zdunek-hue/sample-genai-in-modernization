@@ -14,6 +14,52 @@ import urllib.parse
 from functools import wraps
 from flask import request, redirect, session, jsonify, make_response
 
+def _load_cognito_config_from_ssm():
+    """Populate Cognito settings from SSM Parameter Store when running on Lambda.
+
+    On ECS the task definition maps the client secret in for us. Lambda has no
+    equivalent, and it also cannot receive these values as Terraform variables:
+    the app's Function URL is what Cognito's callback_urls point at, so passing
+    Cognito IDs into the function would make the Terraform graph circular.
+    Reading them here breaks that cycle and keeps the secret out of the
+    function's environment, where it would otherwise be readable via
+    GetFunctionConfiguration.
+
+    Writes into os.environ rather than returning, because app.py derives the
+    stable Flask session key from these same two variables. Runs once per cold
+    start, before the module constants below are read.
+    """
+    prefix = os.environ.get('COGNITO_SSM_PREFIX')
+    if not prefix or os.environ.get('COGNITO_USER_POOL_ID'):
+        return  # not on Lambda, or already configured by the environment
+
+    try:
+        import boto3
+        ssm = boto3.client('ssm')
+        paginator = ssm.get_paginator('get_parameters_by_path')
+        names = {
+            'user_pool_id': 'COGNITO_USER_POOL_ID',
+            'client_id': 'COGNITO_CLIENT_ID',
+            'client_secret': 'COGNITO_CLIENT_SECRET',
+            'domain': 'COGNITO_DOMAIN',
+            'app_url': 'APP_URL',
+        }
+        found = 0
+        for page in paginator.paginate(Path=prefix, Recursive=False, WithDecryption=True):
+            for param in page.get('Parameters', []):
+                key = names.get(param['Name'].rsplit('/', 1)[-1])
+                if key:
+                    os.environ[key] = param['Value']
+                    found += 1
+        print(f"✓ Loaded {found} Cognito parameters from SSM path {prefix}")
+    except Exception as e:
+        # Leave Cognito disabled rather than crashing the whole app: /api/health
+        # stays reachable so the platform can report why the function is unhealthy.
+        print(f"✗ Failed to load Cognito config from SSM ({prefix}): {e}")
+
+
+_load_cognito_config_from_ssm()
+
 # Cognito configuration from environment
 COGNITO_USER_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID')
 COGNITO_CLIENT_ID = os.environ.get('COGNITO_CLIENT_ID')

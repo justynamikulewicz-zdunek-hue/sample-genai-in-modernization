@@ -41,20 +41,16 @@ resource "aws_subnet" "private" {
 }
 
 # ---------------------------------------------------------------------------
-# Single NAT Gateway (cost-optimised for PoC)
+# No NAT Gateway.
+#
+# The web tier is a Lambda outside the VPC, and the generation job runs as a
+# one-shot Fargate task in a public subnet with a public IP. Nothing needs a
+# managed egress path any more, so the NAT Gateway and its Elastic IP are gone
+# — measured at ~$23/month, the second largest line on the bill after Fargate.
+#
+# The private subnets stay (they cost nothing) for workloads that may later
+# need to be unreachable from the internet.
 # ---------------------------------------------------------------------------
-resource "aws_eip" "nat" {
-  domain = "vpc"
-  tags   = { Name = "${var.client_name}-nat-eip" }
-}
-
-resource "aws_nat_gateway" "main" {
-  allocation_id = aws_eip.nat.id
-  subnet_id     = aws_subnet.public[0].id
-
-  tags       = { Name = "${var.client_name}-nat" }
-  depends_on = [aws_internet_gateway.main]
-}
 
 # ---------------------------------------------------------------------------
 # Route tables
@@ -70,13 +66,14 @@ resource "aws_route_table" "public" {
   tags = { Name = "${var.client_name}-public-rt" }
 }
 
+# Local routes only — there is no NAT Gateway to point a default route at.
+#
+# route = [] is stated explicitly rather than omitted: the attribute is
+# Optional+Computed, so leaving the block out means "do not manage routes" and
+# would strand a blackhole route to the deleted NAT Gateway.
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
-
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.main.id
-  }
+  route  = []
 
   tags = { Name = "${var.client_name}-private-rt" }
 }
@@ -96,50 +93,16 @@ resource "aws_route_table_association" "private" {
 # ---------------------------------------------------------------------------
 # Security Groups
 # ---------------------------------------------------------------------------
-resource "aws_security_group" "alb" {
-  name        = "${var.client_name}-alb-sg"
-  description = "ALB - allow HTTP/HTTPS from internet"
-  vpc_id      = aws_vpc.main.id
+# The ALB security group is gone along with the ALB itself — the app is served
+# by a Lambda Function URL, which is not a VPC resource and has no security group.
 
-  ingress {
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "HTTP"
-  }
-
-  ingress {
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "HTTPS"
-  }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "All outbound"
-  }
-
-  tags = { Name = "${var.client_name}-alb-sg" }
-}
-
+# Used only by the one-shot Fargate generation task. That task makes outbound
+# calls (Bedrock, ECR, S3, DynamoDB) and serves nothing, so it takes no ingress
+# at all — a tighter rule than the previous "port 8080 from the ALB".
 resource "aws_security_group" "ecs" {
   name        = "${var.client_name}-ecs-sg"
-  description = "ECS Fargate - allow port 8080 from ALB only"
+  description = "Fargate generation task - egress only, no inbound"
   vpc_id      = aws_vpc.main.id
-
-  ingress {
-    from_port       = 8080
-    to_port         = 8080
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
-    description     = "From ALB"
-  }
 
   egress {
     from_port   = 0

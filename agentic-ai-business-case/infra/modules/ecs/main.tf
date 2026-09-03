@@ -7,32 +7,36 @@ resource "aws_cloudwatch_log_group" "app" {
 
 # ---------------------------------------------------------------------------
 # ECS Cluster
+#
+# No long-running service any more. This cluster exists purely as a place to
+# run one-shot generation jobs (ecs:RunTask) that would exceed Lambda's
+# non-negotiable 900s ceiling. Idle cost is zero: with no task running, a
+# Fargate cluster bills nothing.
+#
+# Container Insights is off. It bills per ingested metric and was charging for
+# detailed telemetry on a container that mostly sat idle; for tasks that live a
+# few minutes the task logs are enough.
 # ---------------------------------------------------------------------------
 resource "aws_ecs_cluster" "main" {
   name = "${var.client_name}-ecs-cluster"
 
   setting {
     name  = "containerInsights"
-    value = "enabled"
+    value = "disabled"
   }
 
   tags = { Name = "${var.client_name}-ecs-cluster" }
 }
 
 # ---------------------------------------------------------------------------
-# SSM SecureString — Cognito client secret
-# Stored in SSM to avoid plain-text in task definition API response
-# ---------------------------------------------------------------------------
-resource "aws_ssm_parameter" "cognito_client_secret" {
-  name  = "/${var.client_name}/cognito/client_secret"
-  type  = "SecureString"
-  value = var.cognito_client_secret
-
-  tags = { Client = var.client_name }
-}
-
-# ---------------------------------------------------------------------------
-# ECS Task Definition
+# Task Definition — the generation job
+#
+# Same image as the Lambda web tier; the Lambda Web Adapter baked into it is
+# inert outside Lambda. RunTask overrides the command to invoke the generator
+# script directly, so gunicorn never starts here.
+#
+# Carries no Cognito configuration: the job authenticates nobody, it just reads
+# input from S3, calls Bedrock and writes reports back.
 # ---------------------------------------------------------------------------
 resource "aws_ecs_task_definition" "app" {
   family                   = "${var.client_name}-business-case-task"
@@ -47,90 +51,26 @@ resource "aws_ecs_task_definition" "app" {
     name  = "${var.client_name}-business-case-generator"
     image = "${var.ecr_repository_url}:latest"
 
-    portMappings = [{
-      containerPort = 8080
-      hostPort      = 8080
-      protocol      = "tcp"
-    }]
-
     environment = [
-      { name = "FLASK_ENV",             value = "production" },
-      { name = "AWS_REGION",            value = var.aws_region },
-      { name = "S3_INPUT_BUCKET",       value = var.s3_input_bucket },
-      { name = "S3_OUTPUT_BUCKET",      value = var.s3_output_bucket },
-      { name = "DYNAMODB_TABLE_NAME",   value = var.dynamodb_table_name },
-      { name = "AUTO_SAVE_TO_DYNAMODB", value = "true" },
-      { name = "COGNITO_USER_POOL_ID",  value = var.cognito_user_pool_id },
-      { name = "COGNITO_CLIENT_ID",     value = var.cognito_client_id },
-      { name = "COGNITO_DOMAIN",        value = var.cognito_domain },
-      { name = "APP_URL",               value = var.app_url }
+      { name = "FLASK_ENV", value = "production" },
+      { name = "AWS_REGION", value = var.aws_region },
+      { name = "S3_INPUT_BUCKET", value = var.s3_input_bucket },
+      { name = "S3_OUTPUT_BUCKET", value = var.s3_output_bucket },
+      { name = "DYNAMODB_TABLE_NAME", value = var.dynamodb_table_name },
+      { name = "AUTO_SAVE_TO_DYNAMODB", value = "true" }
     ]
-
-    # Cognito client secret pulled from SSM at container start (never in logs)
-    secrets = [{
-      name      = "COGNITO_CLIENT_SECRET"
-      valueFrom = aws_ssm_parameter.cognito_client_secret.arn
-    }]
 
     logConfiguration = {
       logDriver = "awslogs"
       options = {
         "awslogs-group"         = aws_cloudwatch_log_group.app.name
         "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "ecs"
+        "awslogs-stream-prefix" = "job"
       }
-    }
-
-    healthCheck = {
-      command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/api/health')\" || exit 1"]
-      interval    = 30
-      timeout     = 10
-      retries     = 3
-      startPeriod = 60
     }
 
     essential = true
   }])
 
   tags = { Name = "${var.client_name}-business-case-task" }
-}
-
-# ---------------------------------------------------------------------------
-# ECS Service
-# ---------------------------------------------------------------------------
-resource "aws_ecs_service" "app" {
-  name            = "${var.client_name}-business-case-service"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.app.arn
-  desired_count   = 1
-  launch_type     = "FARGATE"
-
-  # Grace period gives time for the container to start before ALB marks it unhealthy
-  health_check_grace_period_seconds = 120
-
-  network_configuration {
-    subnets          = var.private_subnet_ids
-    security_groups  = [var.ecs_security_group_id]
-    assign_public_ip = false
-  }
-
-  load_balancer {
-    target_group_arn = var.target_group_arn
-    container_name   = "${var.client_name}-business-case-generator"
-    container_port   = 8080
-  }
-
-  deployment_circuit_breaker {
-    enable   = true
-    rollback = true
-  }
-
-  tags = { Name = "${var.client_name}-business-case-service" }
-
-  lifecycle {
-    # Allow CodeBuild/CI to update task_definition without Terraform reverting it
-    ignore_changes = [task_definition, desired_count]
-  }
-
-  depends_on = [aws_ecs_task_definition.app]
 }

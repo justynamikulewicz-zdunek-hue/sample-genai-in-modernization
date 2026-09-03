@@ -1,6 +1,6 @@
-output "alb_url" {
-  description = "Application URL. Note: self-signed cert, browser will warn — expected for PoC."
-  value       = "https://${module.alb.alb_dns_name}"
+output "app_url" {
+  description = "Application URL (Lambda Function URL). AWS-issued certificate — no browser warning, unlike the previous self-signed ALB."
+  value       = module.lambda.app_url
 }
 
 output "cognito_domain" {
@@ -13,21 +13,27 @@ output "cognito_user_pool_id" {
 }
 
 output "ecr_repository_url" {
-  description = "ECR URL — push Docker image here before ECS can start"
+  description = "ECR URL — CodeBuild pushes the image here"
   value       = module.ecr.repository_url
 }
 
 output "codebuild_project_name" {
-  description = "Trigger this project to build and push the Docker image"
+  description = "Trigger this project to build the image and roll it onto the Lambda"
   value       = module.codebuild.project_name
 }
 
-output "ecs_cluster_name" {
-  value = module.ecs.cluster_name
+output "lambda_function_name" {
+  value = module.lambda.function_name
 }
 
-output "ecs_service_name" {
-  value = module.ecs.service_name
+output "lambda_log_group" {
+  description = "Where to look when the app misbehaves"
+  value       = module.lambda.log_group_name
+}
+
+output "ecs_cluster_name" {
+  description = "Runs one-shot generation jobs only. There is no long-running service any more."
+  value       = module.ecs.cluster_name
 }
 
 output "s3_input_bucket" {
@@ -52,17 +58,23 @@ output "next_steps" {
        (one-time per account; eu-* regions use the eu. cross-region inference profile)
        Region: ${var.aws_region}
 
-    2. Build & push Docker image:
+    2. Build the image and roll it onto the Lambda:
        aws codebuild start-build \
          --project-name ${module.codebuild.project_name} \
          --profile ${var.aws_profile}
 
+       The build now also calls UpdateFunctionCode. Pushing to ECR alone does
+       NOT update a Lambda — the function pins the image digest at deploy time.
+
     3. Monitor build:
        https://${var.aws_region}.console.aws.amazon.com/codesuite/codebuild/projects/${module.codebuild.project_name}/history
 
-    4. Access the app (~5 min after build):
-       https://${module.alb.alb_dns_name}
-       (Accept self-signed cert warning)
+    4. Access the app (~1 min after build):
+       ${module.lambda.app_url}
+       No certificate warning any more — this is an AWS-issued cert.
+
+       First request after a deploy is a cold start (container image, several
+       hundred MB) and may take 10-20s. Subsequent requests are warm.
     =============================================================
   EOT
 }

@@ -10,8 +10,14 @@ variable "aws_region" {
   type = string
 }
 
-variable "alb_dns_name" {
-  type = string
+variable "app_url" {
+  type        = string
+  description = "Public app URL (Lambda Function URL), without trailing slash. Used for OAuth callback/logout."
+}
+
+variable "ssm_prefix" {
+  type        = string
+  description = "SSM path prefix under which Cognito config is published for the app to read."
 }
 
 variable "cognito_domain_suffix" {

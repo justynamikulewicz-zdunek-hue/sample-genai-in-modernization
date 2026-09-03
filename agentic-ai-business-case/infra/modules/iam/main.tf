@@ -154,6 +154,79 @@ resource "aws_iam_role_policy_attachment" "ecs_task" {
 }
 
 # ---------------------------------------------------------------------------
+# Lambda Execution Role — the web tier
+#
+# Runs the same application code as the ECS task, so it reuses the same
+# permission policy rather than restating Bedrock/S3/DynamoDB/Pricing grants.
+# ---------------------------------------------------------------------------
+data "aws_iam_policy_document" "lambda_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "lambda" {
+  name               = "${var.client_name}-lambda-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+
+  tags = { Name = "${var.client_name}-lambda-role" }
+}
+
+# CloudWatch Logs
+resource "aws_iam_role_policy_attachment" "lambda_basic" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# Same application permissions the ECS task role has
+resource "aws_iam_role_policy_attachment" "lambda_app" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = aws_iam_policy.ecs_task.arn
+}
+
+data "aws_iam_policy_document" "lambda_extra" {
+  # Cognito config is read from SSM at cold start — see cognito_auth.py
+  statement {
+    sid    = "SSMCognitoConfig"
+    effect = "Allow"
+    actions = [
+      "ssm:GetParameter",
+      "ssm:GetParameters",
+      "ssm:GetParametersByPath"
+    ]
+    resources = ["arn:aws:ssm:*:*:parameter/${var.client_name}/*"]
+  }
+
+  # Hand long-running generations to a one-shot Fargate task instead of
+  # burning against Lambda's non-negotiable 900s ceiling.
+  statement {
+    sid       = "RunGenerationTask"
+    effect    = "Allow"
+    actions   = ["ecs:RunTask", "ecs:DescribeTasks", "ecs:StopTask"]
+    resources = ["*"]
+  }
+
+  # RunTask must be able to hand the task its roles.
+  statement {
+    sid       = "PassTaskRoles"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.ecs_task.arn, aws_iam_role.ecs_task_execution.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "lambda_extra" {
+  name   = "${var.client_name}-lambda-extra"
+  role   = aws_iam_role.lambda.id
+  policy = data.aws_iam_policy_document.lambda_extra.json
+}
+
+# ---------------------------------------------------------------------------
 # CodeBuild Role — build Docker image & push to ECR
 # ---------------------------------------------------------------------------
 data "aws_iam_policy_document" "codebuild_assume" {
@@ -206,6 +279,20 @@ data "aws_iam_policy_document" "codebuild_permissions" {
       "logs:PutLogEvents"
     ]
     resources = ["*"]
+  }
+
+  # Pushing :latest to ECR does not update a Lambda — the function pins the
+  # image digest at deploy time. The build must tell Lambda to pick up the new
+  # image, otherwise `codebuild start-build` would silently change nothing.
+  # Scoped by name pattern to avoid a dependency on the lambda module.
+  statement {
+    sid    = "UpdateLambdaImage"
+    effect = "Allow"
+    actions = [
+      "lambda:UpdateFunctionCode",
+      "lambda:GetFunction"
+    ]
+    resources = ["arn:aws:lambda:*:*:function:${var.client_name}-*"]
   }
 }
 

@@ -67,9 +67,23 @@ RUN mkdir -p /tmp/input /tmp/output
 RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser \
     && chown -R appuser:appuser /app /tmp/input /tmp/output
 
+# ---------------------------------------------------------------------------
+# AWS Lambda Web Adapter — lets this exact container run as a Lambda function
+# with no application code changes. Outside Lambda the file is inert: only the
+# Lambda runtime reads /opt/extensions. One image therefore serves both the
+# Lambda web tier and the Fargate job tier (ECS RunTask for long generations).
+# ---------------------------------------------------------------------------
+COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 /lambda-adapter /opt/extensions/lambda-adapter
+
 # Set environment variables
 ENV FLASK_ENV=production
 ENV PYTHONUNBUFFERED=1
+
+# Lambda Web Adapter config. Ignored when the container runs outside Lambda.
+# readiness path avoids the adapter probing "/" (the React SPA) during cold start.
+ENV AWS_LWA_PORT=8080
+ENV AWS_LWA_READINESS_CHECK_PATH=/api/health
+ENV AWS_LWA_INVOKE_MODE=response_stream
 
 # Switch to non-root user
 USER appuser

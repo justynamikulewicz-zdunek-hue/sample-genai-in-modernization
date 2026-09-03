@@ -41,6 +41,11 @@ resource "aws_codebuild_project" "app" {
       name  = "PROJECT_SUBDIR"
       value = var.project_subdir
     }
+
+    environment_variable {
+      name  = "LAMBDA_FUNCTION_NAME"
+      value = var.lambda_function_name
+    }
   }
 
   source {
@@ -66,7 +71,14 @@ resource "aws_codebuild_project" "app" {
             - echo Pushing image to ECR...
             - docker push $ECR_REPO_URL:latest
             - docker push $ECR_REPO_URL:$IMAGE_TAG
-            - echo Build complete. Image $ECR_REPO_URL:$IMAGE_TAG
+            # A Lambda pins the image digest at deploy time, so pushing to ECR
+            # does not roll the function forward on its own. Point it at the
+            # immutable tag rather than :latest so the deployed version is
+            # traceable back to a commit.
+            - echo Rolling image onto Lambda $LAMBDA_FUNCTION_NAME...
+            - aws lambda update-function-code --function-name $LAMBDA_FUNCTION_NAME --image-uri $ECR_REPO_URL:$IMAGE_TAG --region $AWS_DEFAULT_REGION --no-cli-pager
+            - aws lambda wait function-updated --function-name $LAMBDA_FUNCTION_NAME --region $AWS_DEFAULT_REGION
+            - echo Build complete. Image $ECR_REPO_URL:$IMAGE_TAG is live.
     BUILDSPEC
   }
 

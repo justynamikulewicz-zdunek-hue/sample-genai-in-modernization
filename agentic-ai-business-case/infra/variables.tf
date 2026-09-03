@@ -53,6 +53,18 @@ variable "container_memory" {
   }
 }
 
+variable "lambda_memory_mb" {
+  type        = number
+  default     = 4096
+  description = "Memory for the web-tier Lambda. CPU scales with it (1769 MB = 1 vCPU), so 4096 roughly matches the 2 vCPU the Fargate task had."
+}
+
+variable "lambda_timeout_seconds" {
+  type        = number
+  default     = 780
+  description = "Below AWS's non-adjustable 900s ceiling, leaving headroom. Generations expected to run longer are handed to ECS RunTask."
+}
+
 variable "github_repo_url" {
   type    = string
   default = "https://github.com/justynamikulewicz-zdunek-hue/sample-genai-in-modernization"
