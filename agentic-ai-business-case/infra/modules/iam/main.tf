@@ -290,7 +290,11 @@ data "aws_iam_policy_document" "codebuild_permissions" {
     effect = "Allow"
     actions = [
       "lambda:UpdateFunctionCode",
-      "lambda:GetFunction"
+      "lambda:GetFunction",
+      # `aws lambda wait function-updated` polls GetFunctionConfiguration,
+      # which is a separate IAM action from GetFunction — without it the build
+      # pushes the image successfully and then fails on the verification step.
+      "lambda:GetFunctionConfiguration"
     ]
     resources = ["arn:aws:lambda:*:*:function:${var.client_name}-*"]
   }

@@ -85,7 +85,7 @@ module "iam" {
 #     lambda -> function_url -> cognito.callback_urls -> lambda.environment
 # The chain is straightened by publishing Cognito config to SSM and having the
 # app read it at cold start (see ui/backend/cognito_auth.py):
-#     lambda -> function_url -> cognito -> SSM
+#     lambda -> function_url -> cloudfront -> cognito -> SSM
 # ---------------------------------------------------------------------------
 locals {
   cognito_ssm_prefix = "/${var.client_name}/cognito"
@@ -111,12 +111,22 @@ module "lambda" {
   ecs_security_group_id      = module.vpc.ecs_security_group_id
 }
 
+# The function URL is not public (organisation policy blocks anonymous
+# invocation), so CloudFront signs requests to it and is the app's real entry
+# point.
+module "cloudfront" {
+  source              = "./modules/cloudfront"
+  client_name         = var.client_name
+  function_url_domain = module.lambda.function_url_domain
+  function_name       = module.lambda.function_name
+}
+
 module "cognito" {
   source                = "./modules/cognito"
   client_name           = var.client_name
   admin_email           = var.admin_email
   aws_region            = var.aws_region
-  app_url               = module.lambda.app_url
+  app_url               = module.cloudfront.app_url
   ssm_prefix            = local.cognito_ssm_prefix
   cognito_domain_suffix = random_id.cognito_suffix.hex
 }

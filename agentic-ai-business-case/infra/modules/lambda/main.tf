@@ -77,29 +77,25 @@ resource "aws_lambda_function" "app" {
 }
 
 # ---------------------------------------------------------------------------
-# Function URL — replaces the ALB. Gives an AWS-issued TLS certificate, so the
-# self-signed cert warning disappears. RESPONSE_STREAM allows responses to
-# stream for the full function timeout instead of buffering.
+# Function URL — replaces the ALB.
+#
+# NOT public: AuthType is AWS_IAM, so every request must be SigV4-signed.
+# CloudFront signs on the viewer's behalf via Origin Access Control, and is the
+# only thing allowed to invoke this (see modules/cloudfront).
+#
+# An anonymous function URL was tried first and returned 403 from the Lambda
+# service despite a correct resource policy — the account is a member of an AWS
+# Organization that blocks anonymous invocation. Signing through CloudFront
+# sidesteps that, and is the better posture anyway: it puts the app behind
+# something that can carry WAF, access logs and a real domain.
+#
+# RESPONSE_STREAM lets responses stream rather than buffer.
 # ---------------------------------------------------------------------------
 resource "aws_lambda_function_url" "app" {
   function_name      = aws_lambda_function.app.function_name
-  authorization_type = "NONE" # authentication is Cognito's job, inside the app
+  authorization_type = "AWS_IAM"
   invoke_mode        = "RESPONSE_STREAM"
 
-  cors {
-    allow_origins     = ["*"]
-    allow_methods     = ["*"]
-    allow_headers     = ["*"]
-    allow_credentials = false
-  }
-}
-
-# Public invoke permission. AWS adds this implicitly in the console, but an
-# API/Terraform-created function URL needs it stated explicitly.
-resource "aws_lambda_permission" "function_url" {
-  statement_id           = "AllowPublicFunctionUrlInvoke"
-  action                 = "lambda:InvokeFunctionUrl"
-  function_name          = aws_lambda_function.app.function_name
-  principal              = "*"
-  function_url_auth_type = "NONE"
+  # No cors block: the browser only ever talks to CloudFront, which serves the
+  # frontend and the API from one origin.
 }

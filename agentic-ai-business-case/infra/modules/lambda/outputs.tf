@@ -6,10 +6,10 @@ output "function_arn" {
   value = aws_lambda_function.app.arn
 }
 
-# Trailing slash stripped so callers can append paths without doubling it.
-output "app_url" {
-  description = "Public HTTPS URL of the app. AWS-issued certificate, unlike the ALB's self-signed one."
-  value       = trimsuffix(aws_lambda_function_url.app.function_url, "/")
+# Host only — CloudFront wants a domain name for its origin, not a URL.
+output "function_url_domain" {
+  description = "Hostname of the Function URL, for use as a CloudFront origin."
+  value       = replace(replace(aws_lambda_function_url.app.function_url, "https://", ""), "/", "")
 }
 
 output "log_group_name" {

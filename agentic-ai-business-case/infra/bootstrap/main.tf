@@ -213,6 +213,20 @@ data "aws_iam_policy_document" "terraform_deployer_permissions" {
     resources = ["*"]
   }
 
+  # CloudFront fronts the Lambda Function URL. The function URL itself is not
+  # public — organisation policy blocks anonymous invocation — so CloudFront
+  # signs requests to it via Origin Access Control.
+  statement {
+    sid    = "CloudFrontFull"
+    effect = "Allow"
+    actions = [
+      "cloudfront:*",
+      # OAC signing needs the distribution to assume a service-linked role.
+      "iam:CreateServiceLinkedRole"
+    ]
+    resources = ["*"]
+  }
+
   # Kept for clients who still mandate an ALB; the default stack no longer
   # creates one.
   statement {
