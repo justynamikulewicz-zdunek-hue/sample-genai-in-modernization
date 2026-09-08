@@ -81,9 +81,12 @@ ENV PYTHONUNBUFFERED=1
 
 # Lambda Web Adapter config. Ignored when the container runs outside Lambda.
 # readiness path avoids the adapter probing "/" (the React SPA) during cold start.
+#
+# Invoke mode stays at the adapter's default (buffered): the app is fronted by
+# an HTTP API, which cannot parse a streamed response. response_stream only
+# works behind a Function URL, and those are blocked on this account.
 ENV AWS_LWA_PORT=8080
 ENV AWS_LWA_READINESS_CHECK_PATH=/api/health
-ENV AWS_LWA_INVOKE_MODE=response_stream
 
 # Switch to non-root user
 USER appuser

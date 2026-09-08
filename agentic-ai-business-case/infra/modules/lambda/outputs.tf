@@ -6,10 +6,9 @@ output "function_arn" {
   value = aws_lambda_function.app.arn
 }
 
-# Host only — CloudFront wants a domain name for its origin, not a URL.
-output "function_url_domain" {
-  description = "Hostname of the Function URL, for use as a CloudFront origin."
-  value       = replace(replace(aws_lambda_function_url.app.function_url, "https://", ""), "/", "")
+# An AWS_PROXY integration takes invoke_arn, not the plain function ARN.
+output "invoke_arn" {
+  value = aws_lambda_function.app.invoke_arn
 }
 
 output "log_group_name" {

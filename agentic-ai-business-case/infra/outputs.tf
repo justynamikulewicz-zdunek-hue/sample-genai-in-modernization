@@ -1,11 +1,10 @@
 output "app_url" {
-  description = "Application URL (CloudFront). AWS-issued certificate — no browser warning, unlike the previous self-signed ALB."
-  value       = module.cloudfront.app_url
+  description = "Application URL (HTTP API). AWS-issued certificate — no browser warning, unlike the previous self-signed ALB."
+  value       = module.apigateway.app_url
 }
 
-output "cloudfront_distribution_id" {
-  description = "Use with 'aws cloudfront create-invalidation' after a deploy if a stale asset is served."
-  value       = module.cloudfront.distribution_id
+output "api_id" {
+  value = module.apigateway.api_id
 }
 
 output "cognito_domain" {
@@ -75,12 +74,12 @@ output "next_steps" {
        https://${var.aws_region}.console.aws.amazon.com/codesuite/codebuild/projects/${module.codebuild.project_name}/history
 
     4. Access the app (~1 min after build):
-       ${module.cloudfront.app_url}
+       ${module.apigateway.app_url}
        No certificate warning any more — this is an AWS-issued cert.
 
-       Traffic goes through CloudFront, which signs requests to the Lambda
-       Function URL. The function URL itself is AuthType AWS_IAM and cannot be
-       reached directly.
+       Traffic goes through an HTTP API. Lambda Function URLs are blocked by
+       organisation policy on this account, so the API invokes the function
+       through lambda:InvokeFunction instead.
 
        First request after a deploy is a cold start (container image, several
        hundred MB) and may take 10-20s. Subsequent requests are warm.

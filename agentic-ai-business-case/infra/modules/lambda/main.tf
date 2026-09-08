@@ -41,6 +41,12 @@ resource "aws_lambda_function" "app" {
       DYNAMODB_TABLE_NAME   = var.dynamodb_table_name
       AUTO_SAVE_TO_DYNAMODB = "true"
 
+      # An HTTP API cannot parse a streamed response, so the adapter must
+      # buffer. Set here as well as in the Dockerfile because a function
+      # environment variable overrides the image's ENV — this takes effect on
+      # the next apply, without waiting for an image rebuild.
+      AWS_LWA_INVOKE_MODE = "buffered"
+
       # Cognito settings are NOT passed here — that would create a Terraform
       # cycle (function -> function_url -> cognito callback -> function).
       # cognito_auth.py reads them from this SSM path at cold start instead.
@@ -77,25 +83,19 @@ resource "aws_lambda_function" "app" {
 }
 
 # ---------------------------------------------------------------------------
-# Function URL — replaces the ALB.
+# No Function URL.
 #
-# NOT public: AuthType is AWS_IAM, so every request must be SigV4-signed.
-# CloudFront signs on the viewer's behalf via Origin Access Control, and is the
-# only thing allowed to invoke this (see modules/cloudfront).
+# Two attempts failed the same way. Anonymous (AuthType NONE) returned 403 from
+# the Lambda service despite a textbook-correct resource policy. Switching to
+# AuthType AWS_IAM and signing through CloudFront Origin Access Control
+# returned 403 as well, again with a correct policy — the request reached the
+# origin (x-cache: Error from cloudfront) and was refused there.
 #
-# An anonymous function URL was tried first and returned 403 from the Lambda
-# service despite a correct resource policy — the account is a member of an AWS
-# Organization that blocks anonymous invocation. Signing through CloudFront
-# sidesteps that, and is the better posture anyway: it puts the app behind
-# something that can carry WAF, access logs and a real domain.
+# The account belongs to an AWS Organization whose policy denies
+# lambda:InvokeFunctionUrl regardless of caller, service principals included.
+# That cannot be diagnosed or lifted from a member account.
 #
-# RESPONSE_STREAM lets responses stream rather than buffer.
+# The app is therefore fronted by an HTTP API, which invokes through
+# lambda:InvokeFunction — a different action, and one that works here.
+# See modules/apigateway.
 # ---------------------------------------------------------------------------
-resource "aws_lambda_function_url" "app" {
-  function_name      = aws_lambda_function.app.function_name
-  authorization_type = "AWS_IAM"
-  invoke_mode        = "RESPONSE_STREAM"
-
-  # No cors block: the browser only ever talks to CloudFront, which serves the
-  # frontend and the API from one origin.
-}

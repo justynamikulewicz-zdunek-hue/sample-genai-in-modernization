@@ -213,9 +213,17 @@ data "aws_iam_policy_document" "terraform_deployer_permissions" {
     resources = ["*"]
   }
 
-  # CloudFront fronts the Lambda Function URL. The function URL itself is not
-  # public — organisation policy blocks anonymous invocation — so CloudFront
-  # signs requests to it via Origin Access Control.
+  # The app is served by an HTTP API: organisation policy denies
+  # lambda:InvokeFunctionUrl, so Function URLs are unusable on this account.
+  statement {
+    sid       = "APIGatewayFull"
+    effect    = "Allow"
+    actions   = ["apigateway:*"]
+    resources = ["*"]
+  }
+
+  # CloudFront is not wired into the stack today, but the module is kept for a
+  # future custom domain or WAF in front of the API.
   statement {
     sid    = "CloudFrontFull"
     effect = "Allow"
