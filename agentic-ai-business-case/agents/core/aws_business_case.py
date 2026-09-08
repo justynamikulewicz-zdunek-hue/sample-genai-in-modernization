@@ -2017,7 +2017,7 @@ if ENABLE_MULTI_STAGE:
             except Exception as e:
                 logger.warning(f"Deterministic ATX generation failed: {e}")
                 logger.info("Falling back to multi-stage LLM generation")
-                final_result_text = generate_multi_stage_business_case(result.results, project_context_with_timeline, rvtools_summary, it_inventory_summary, atx_summary)
+                final_result_text = generate_multi_stage_business_case(result.results, project_context_with_timeline, rvtools_summary, it_inventory_summary, atx_summary, mra_summary if mra_content else None)
                 logger.info(f"Multi-stage business case generated ({len(final_result_text)} characters)")
         else:
             # Add EKS results to agent results if available
@@ -2029,7 +2029,7 @@ if ENABLE_MULTI_STAGE:
                 logger.info("✓ EKS results added to business case context")
             
             # Generate business case in multiple stages using LLM
-            final_result_text = generate_multi_stage_business_case(result.results, project_context_with_timeline, rvtools_summary, it_inventory_summary, atx_summary)
+            final_result_text = generate_multi_stage_business_case(result.results, project_context_with_timeline, rvtools_summary, it_inventory_summary, atx_summary, mra_summary if mra_content else None)
             logger.info(f"Multi-stage business case generated ({len(final_result_text)} characters)")
         
         file_path = os.path.join(output_folder_dir_path, 'aws_business_case.md')

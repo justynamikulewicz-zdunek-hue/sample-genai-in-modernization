@@ -30,6 +30,29 @@ resource "aws_s3_bucket_public_access_block" "input" {
   restrict_public_buckets = true
 }
 
+# Uploads go straight from the browser to S3 with a presigned URL, because the
+# app runs on Lambda and a request body there is capped at 6 MB — smaller than
+# a real RVTools export. That PUT is cross-origin, so without this rule the
+# browser refuses it before it ever leaves the machine.
+#
+# The origin is a wildcard because the app's own URL belongs to the API Gateway
+# that sits downstream of this bucket in the dependency graph; naming it here
+# would make the graph circular. That is safe: CORS is not an authorisation
+# boundary. Access is granted by the presigned URL's signature, which is
+# short-lived and issued only to a logged-in user, and every public access
+# setting on this bucket is blocked above.
+resource "aws_s3_bucket_cors_configuration" "input" {
+  bucket = aws_s3_bucket.input.id
+
+  cors_rule {
+    allowed_methods = ["PUT"]
+    allowed_origins = ["*"]
+    allowed_headers = ["*"]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3000
+  }
+}
+
 resource "aws_s3_bucket" "output" {
   bucket        = local.output_bucket_name
   force_destroy = true

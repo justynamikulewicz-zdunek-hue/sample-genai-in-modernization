@@ -2212,17 +2212,20 @@ The deterministic pricing calculation could not be completed for this run. This 
         return business_case
 
 
-def generate_multi_stage_business_case(agent_results, project_context, rvtools_summary=None, it_inventory_summary=None, atx_summary=None):
+def generate_multi_stage_business_case(agent_results, project_context, rvtools_summary=None, it_inventory_summary=None, atx_summary=None, mra_summary=None):
     """
     Generate business case in multiple stages for maximum quality
-    
+
     Args:
         agent_results: Dictionary of results from all agents
         project_context: Project information and context
         rvtools_summary: RVTools summary dict (if available)
         it_inventory_summary: IT Inventory summary dict (if available)
         atx_summary: ATX summary dict (if available)
-    
+        mra_summary: Raw MRA text already read from disk. Used when the MRA
+            agent fails, so a failed node cannot make the document assert that
+            no assessment was supplied.
+
     Returns:
         Complete business case document
     """
@@ -2250,9 +2253,24 @@ def generate_multi_stage_business_case(agent_results, project_context, rvtools_s
         return 'N/A'
     
     def get_mra_content():
-        """Get MRA content or recommendation to conduct MRA if not available"""
+        """Get MRA content, in order of preference.
+
+        The agent's synthesis is best, but that node can fail — it raised
+        MaxTokensReachedException on a 16k-character MRA — and when it did, the
+        document claimed no MRA had been supplied even though one had. So fall
+        back to the document text Python already read before declaring it
+        missing. Same idea as the pre-computed RVTools and IT Inventory
+        summaries: do not let an LLM failure turn into a factual claim.
+        """
         if 'agent_mra_analysis' in agent_results and agent_results['agent_mra_analysis'].result:
             return str(agent_results['agent_mra_analysis'].result)
+        elif mra_summary:
+            return (
+                "**Migration Readiness Assessment (MRA) — source document**\n\n"
+                "The MRA below is quoted from the supplied assessment. Summarise its "
+                "findings; do not state that an MRA was not provided.\n\n"
+                f"{mra_summary}"
+            )
         else:
             return """**Migration Readiness Assessment (MRA) Not Provided**
 

@@ -2,14 +2,18 @@ import os
 from strands import Agent, tool
 from strands.models import BedrockModel
 
-from agents.config.config import input_folder_dir_path, model_id_claude3_7, model_temperature
+from agents.config.config import input_folder_dir_path, model_id_claude3_7, model_temperature, max_tokens_default
 from agents.strategy.wave_planning import generate_wave_plan_from_dependencies
 
 
 # Create a BedrockModel
+# max_tokens is stated explicitly: the MRA agent hit
+# MaxTokensReachedException on a large input and its node failed silently,
+# so every agent now declares its own ceiling rather than inheriting a low default.
 bedrock_model = BedrockModel(
     model_id=model_id_claude3_7,
-    temperature=model_temperature
+    temperature=model_temperature,
+    max_tokens=max_tokens_default
 )
 
 def read_file_from_input_dir(filename):

@@ -4,13 +4,19 @@ from strands.models import BedrockModel
 from docx import Document
 from pypdf import PdfReader
 
-from agents.config.config import input_folder_dir_path, model_id_claude3_7, model_temperature
+from agents.config.config import input_folder_dir_path, model_id_claude3_7, model_temperature, max_tokens_default
 
 
 # Create a BedrockModel
+#
+# max_tokens is stated explicitly because this agent hit
+# MaxTokensReachedException on a 16k-character MRA: the default ceiling was too
+# low for the multi-section synthesis its system prompt asks for. When the node
+# failed, the business case wrongly reported that no MRA had been supplied.
 bedrock_model = BedrockModel(
     model_id=model_id_claude3_7,
-    temperature=model_temperature
+    temperature=model_temperature,
+    max_tokens=max_tokens_default
 )
 
 def read_file_from_input_dir(filename):
